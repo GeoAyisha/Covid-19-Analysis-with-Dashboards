@@ -1,0 +1,206 @@
+---
+title: __"COVID-19 in Austria"__
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(tidyverse)
+library(ggthemes) 
+library(plotly)
+library(sf)
+library(leaflet)
+library(gganimate)
+library(tmap)
+library(dplyr)
+library(readr)
+Sys.setlocale(category = "LC_ALL", locale = "German")
+
+# Using readr#downlad some data from EU web
+data <- read_csv("https://opendata.ecdc.europa.eu/covid19/subnationalcaseweekly/csv/data.csv")
+data <-data%>% 
+  filter(country == "Austria")
+data <- data %>% rename(name=`region_name`)
+#download countries for spatial join to country codes
+download.file("https://www.naturalearthdata.com/http//www.naturalearthdata.com/download/10m/cultural/ne_10m_admin_1_states_provinces.zip", destfile="ne_10m_admin_1_states_provinces.zip")
+unzip("ne_10m_admin_1_states_provinces.zip")
+ne_countries_1 <- st_read("ne_10m_admin_1_states_provinces.shp")
+ne_countries_1 <-ne_countries_1 %>% #choose Austria only
+  filter(iso_a2 == "AT")
+
+
+
+ne_countries_1$name[ne_countries_1$name== "Kärnten"] <- "Karnten"
+ne_countries_1$name[ne_countries_1$name== 'Niederösterreich'] <- 'Niederosterreich'
+ne_countries_1$name[ne_countries_1$name== 'Oberösterreich'] <- 'Oberosterreich'
+#select needed columns inlcountries layer
+
+ne_countries_selected <- ne_countries_1%>% #less much variables
+  select( `name`,`geometry`)
+
+joined_data<-merge(ne_countries_selected, data)
+joined_data
+#separate years
+stat_date<-joined_data%>%
+  separate(year_week, c("year", "week"), "-")
+data2020<-stat_date%>%
+  filter(year==2020)
+data2021<-stat_date%>%
+  filter(year==2021)
+data2022<-stat_date%>%
+  filter(year==2022)
+#lets make a map. Before making maps, I should summarize get mean weekly counts per each county
+#data for 2020
+data2020_sum<- data2020 %>% group_by(name) %>% 
+  summarise_at(vars(weekly_count), list(Weekly_Cases= mean))
+#data for 2021
+data2021_sum<- data2021 %>% group_by(name) %>% 
+  summarise_at(vars(weekly_count), list(Weekly_Cases= mean))
+#data for 2022
+data2022_sum<- data2022 %>% group_by(name) %>% 
+  summarise_at(vars(weekly_count), list(Weekly_Cases= mean))
+#round column for making it nicer
+data2020_sum$WeeklyCases <- round(data2020_sum$Weekly_Cases) # Round off the column to integer
+
+```
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Map 1: __Average weekly COVID-19 cases in the regions of Austria__
+Click the layers sign to see all maps
+```{r}
+
+tmap_mode("view")
+
+tm_shape(data2020_sum)+
+  tm_polygons(col = "WeeklyCases",style='fixed',breaks=c(0,500, 750,1000, 1500, 1800),
+              style = "pretty",
+              palette="BuPu",title='Weekly count-2020',bg.color="black")+
+  tm_borders(col="white")+
+  tm_shape(data2021_sum)+
+  tm_polygons(col = "Weekly_Cases",style='fixed',breaks=c(0,700, 1500,2000, 2500, 4000),
+              style = "pretty",
+              palette="BuPu",title='Weekly count-2021',bg.color="black")+
+  tm_text(text ="name",
+          bg.color = "grey",
+          shadow = T)+
+  tm_shape(data2022_sum)+
+  tm_polygons(col = "Weekly_Cases",style='fixed',breaks=c(0,3500,7500, 13000,20000,26000),
+              style = "pretty",
+              palette="BuPu",title='Weekly count-2022',bg.color="black")
+
+
+```
+
+
+### Map2: __Average 14 day COVID-19 rate per 100 000 people in the regions of Austria__
+Click the layers sign to see all maps
+```{r}
+
+#second map for COVID-19 rate 
+#for mean calcualtion, I need to drop null values
+data2020_na<-data2020 %>% filter(!if_any(rate_14_day_per_100k, is.na))
+data2021_na<-data2021 %>% filter(!if_any(rate_14_day_per_100k, is.na))
+data2022_na<-data2022 %>% filter(!if_any(rate_14_day_per_100k, is.na))
+data2020_sum_rate<- data2020_na%>% group_by(name) %>% 
+  summarise_at(vars(rate_14_day_per_100k), list(rate= mean))
+data2021_sum_rate<- data2021_na%>% group_by(name) %>% 
+  summarise_at(vars(rate_14_day_per_100k), list(rate= mean))
+data2022_sum_rate<- data2022_na%>% group_by(name) %>% 
+  summarise_at(vars(rate_14_day_per_100k), list(rate= mean))
+
+tmap_mode("view")
+
+
+tm_shape(data2020_sum_rate)+
+  tm_polygons(col = "rate",style='fixed', breaks=c(0,160, 180,220, 240, 260),
+              style = "pretty",
+              palette="Oranges",title='rate-2020',bg.color="black")+
+  tm_shape(data2021_sum_rate)+
+  tm_polygons(col = "rate",style='fixed',breaks=c(0,300,350, 400,450, 550),
+              style = "pretty",
+              palette="Oranges",title='rate-2021',bg.color="black")+
+  tm_text(text ="name",
+          bg.color = "grey",
+          shadow = T)+
+  tm_shape(data2022_sum_rate)+
+  tm_polygons(col = "rate",style='quantile',breaks=c(0,2000,2100, 2200,2300,2600),
+              style = "pretty",
+              palette="Oranges",title='rate-2022',bg.color="black")
+
+
+```
+
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Chart 1: __Monthly count of COVID-19 cases in Austria__
+```{r}
+
+#lets make a visualisation with ggplot)
+# plotly plot: 
+#extract month from weeks
+data2022$newdate3 <- lubridate::month(as.Date(paste0(data2022$year, "-", data2022$week, "-", 10), format = "%Y-%U-%u"))
+#change number to month 
+#months vector assuming 1st month is Jan.
+mymonths <- c("Jan","Feb","Mar",
+              "Apr","May","Jun",
+              "Jul","Aug","Sep",
+              "Oct","Nov","Dec")
+#add abbreviated month name
+data2022$MonthAbb <- mymonths[ data2022$newdate3]
+sum_month2022<-data2022%>%group_by(name,MonthAbb) %>%
+  summarise_at(vars(weekly_count), list(monthly_case= sum))
+sum_month2022$MonthAbb = factor(sum_month2022$MonthAbb, levels = month.abb)
+
+#ggplot
+#another visualisation for 2021 all year  graph bar 
+gg_cov_cases<-sum_month2022%>%
+  ggplot( aes(x = MonthAbb, y = monthly_case, group=name))+
+  geom_bar(stat="identity", width=0.5,  position = "dodge",aes(fill = name)) +
+  scale_fill_brewer(palette="Paired")+
+  ggtitle(" Monthly count of COVID-19 cases in Austria 2022 ") +
+  theme(plot.title = element_text(hjust = 1, size = 14, family = "serif"),panel.background = element_rect(fill='white'),
+        panel.grid.minor.y = element_line(size=0.002),
+        panel.grid.major = element_line(colour = "#CCFFFF",size =0.00002), text=element_text(size=10)) +
+  labs(fill='Provinces') +
+  ylab("Monthly cases")+
+  scale_x_discrete(limits = month.abb)+
+  xlab(" ")
+
+plotly::ggplotly(gg_cov_cases)
+```
+
+### Chart 2: __Annual Covid-19 Cases analysis in Austria__
+```{r}
+#calculate yearly sum for all country 
+stat_date$month_num <- lubridate::month(as.Date(paste0(stat_date$year, "-", stat_date$week, "-", 1), format = "%Y-%U-%u"))
+stat_date_na<-stat_date %>% filter(!if_any(month_num, is.na))#dropna because 0f 2020, could find more solution
+stat_date_na$month <- mymonths[stat_date_na$month_num]
+stat_date_na<-stat_date_na%>%group_by(month,year) %>%
+  summarise_at(vars(weekly_count), list(monthly_count_sum= sum))
+
+stat_date_na$month = factor(stat_date_na$month, levels = month.abb)# to order months
+
+#plot for second chart 
+month_aus<- stat_date_na %>%
+  ggplot( aes(x=month, y=monthly_count_sum, group=year, color=year)) +
+  geom_line(size=1.1) +
+  scale_color_discrete()+
+  labs(color='Year') +
+  ggtitle("Monthly COVID-19 cases evolution per year in Austria") +
+  theme(plot.title = element_text(hjust = 0.5, size = 14, family = "serif", face = "bold"),
+        panel.grid.minor.y = element_line(size=0.002),
+        panel.background = element_rect(fill='white'),
+        panel.grid.major = element_line(colour = "#CCFFFF",size =0.00002), text=element_text(size=10)) +
+  ylab("Number of cases")+
+  xlab("Month")+
+  scale_x_discrete(limits = month.abb)
+plotly::ggplotly(month_aus)
+
+```
